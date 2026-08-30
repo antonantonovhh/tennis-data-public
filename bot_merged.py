@@ -3847,6 +3847,11 @@ def monitor():
             current_matches = parse_matches(yelo_ratings, surface_elo_ratings)
             if current_matches:
                 latest_matches = current_matches
+                # Инициализация обязательна: когда новых матчей нет — а это
+                # обычное состояние круга, — ветка ниже не выполняется, и без
+                # неё `if new_slugs` падает с UnboundLocalError. Синтаксис при
+                # этом верный, так что проверка компиляцией такое не ловит.
+                new_slugs = set()
                 fresh = set(current_matches.keys()) - seen_slugs
                 if fresh:
                     # Помечаем показанными ВСЕ новые, а объявляем только те,
