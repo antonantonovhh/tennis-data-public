@@ -175,3 +175,7 @@ for t in test_*.py; do ./venv/bin/python3 "$t"; done
 `test_rowspan.py`, `test_retired_rules.py`, `test_match_dates.py`,
 `test_cancelled.py`, `test_bethub.py` и остальные заведены каждый под свой
 разобранный случай, чтобы он не вернулся.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
