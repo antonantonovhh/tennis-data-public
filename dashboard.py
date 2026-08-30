@@ -1118,9 +1118,55 @@ def _clv_rows():
         if not (op and cl and ot):
             continue
         p = (1 / cl) / (1 / cl + 1 / ot)
-        out.append((r.get("stream") or "?", r.get("market") or "?",
-                    p * op - 1, op / cl - 1))
+        out.append({
+            "stream": r.get("stream") or "?",
+            "market": r.get("market") or "?",
+            "pick": r.get("pick") or "",
+            "line": (r.get("line") or "").replace(",", "."),
+            "p1": r.get("p1") or "", "p2": r.get("p2") or "",
+            "when": r.get("when") or "",
+            "open": op, "close": cl,
+            "ev": p * op - 1,          # ожидаемая доходность по закрытию
+            "move": op / cl - 1,       # насколько наша цена выше закрывающей
+            "closed_at": r.get("closed_at") or "",
+        })
     return out
+
+
+def _clv_detail(rows, limit: int = 200) -> str:
+    """Построчно: по какой цене поставлено и какой оказалась закрывающая."""
+    rows = sorted(rows, key=lambda r: r["closed_at"], reverse=True)[:limit]
+    body = []
+    # Пометка потока обязательна: один и тот же исход попадает и в ценные
+    # ставки, и в журнал исходов — без неё две строки выглядят как дубль,
+    # хотя это разные популяции со своим отбором.
+    STREAM = {"value": "ценная", "pick": "исход"}
+    for r in rows:
+        sel = " ".join(x for x in (r["market"], r["pick"], r["line"]) if x)
+        tag = STREAM.get(r["stream"])
+        if tag:
+            sel = f'{e(sel)} <span class="dim">· {tag}</span>'
+        else:
+            sel = e(sel)
+        cls = "ok" if r["ev"] > 0 else "bad"
+        # Стрелка показывает движение цены, а не выгоду: вверх — наша цена
+        # была выше закрывающей, то есть мы успели взять лучше.
+        mark = ("=" if abs(r["move"]) < 0.005
+                else ('<span class="ok">↑</span>' if r["move"] > 0
+                      else '<span class="bad">↓</span>'))
+        body.append([
+            f'{e(r["p1"])} — {e(r["p2"])}<br>'
+            f'<span class="dim">{e(fmt_when(r["when"]))}</span>',
+            sel,
+            f'<span class=num>{r["open"]:.3f}</span>',
+            f'<span class=num>{r["close"]:.3f}</span> {mark}',
+            f'<span class="num {cls}">{r["ev"] * 100:+.1f}%</span>',
+        ])
+    tail = (f'<p class="note">Показаны последние {limit}.</p>'
+            if len(rows) == limit else "")
+    return ("<h3>Ставка за ставкой</h3>"
+            + table(["Матч", "Ставка", "Взяли", "Закрытие", "CLV"], body)
+            + tail)
 
 
 def _clv_block() -> str:
@@ -1150,7 +1196,7 @@ def _clv_block() -> str:
     def block(name, data):
         if not data:
             return None
-        ev = [x[2] for x in data]
+        ev = [x["ev"] for x in data]
         avg = sum(ev) / len(ev)
         pos = sum(1 for v in ev if v > 0) / len(ev) * 100
         lo, hi = _paired_ci(ev)
@@ -1162,12 +1208,12 @@ def _clv_block() -> str:
                 f'<span class=num>{pos:.0f}%</span>',
                 f'<span class="num dim">{ci}</span>']
 
-    body = [block("Ценные ставки", [x for x in rows if x[0] == "value"]),
-            block("Исходы", [x for x in rows if x[0] == "pick"]),
+    body = [block("Ценные ставки", [x for x in rows if x["stream"] == "value"]),
+            block("Исходы", [x for x in rows if x["stream"] == "pick"]),
             block("Вместе", rows)]
     body = [b for b in body if b]
 
-    ev = [x[2] for x in rows]
+    ev = [x["ev"] for x in rows]
     avg = sum(ev) / len(ev)
     lo, hi = _paired_ci(ev)
     if len(rows) < 100:
@@ -1193,6 +1239,7 @@ def _clv_block() -> str:
         'означает, что мы просто платили комиссию. Обратите внимание: CLV — '
         'измерительный прибор, а не источник денег. Он не делает модель '
         'лучше, он быстро говорит, есть ли смысл продолжать.</p>',
+        _clv_detail(rows),
     ])
 
 

@@ -434,8 +434,42 @@ def _clv_rows():
             # Маржа снимается по обеим сторонам: без этого любая ставка
             # выглядит убыточной просто потому, что комиссия сидит в цене.
             p = (1 / cl) / (1 / cl + 1 / ot)
-            out.append((r.get("market") or "?", p * op - 1))
+            out.append({
+                "market": r.get("market") or "?",
+                "pick": r.get("pick") or "",
+                "line": (r.get("line") or "").replace(",", "."),
+                "p1": r.get("p1") or "", "p2": r.get("p2") or "",
+                "when": r.get("when") or "",
+                "open": op, "close": cl,
+                "ev": p * op - 1,
+                "move": op / cl - 1,
+                "closed_at": r.get("closed_at") or "",
+            })
     return out
+
+
+def _clv_detail(rows, limit: int = 200) -> str:
+    """Построчно: по какой цене поставлено и какой оказалась закрывающая."""
+    rows = sorted(rows, key=lambda r: r["closed_at"], reverse=True)[:limit]
+    body = []
+    for r in rows:
+        sel = " ".join(x for x in (r["market"], r["pick"], r["line"]) if x)
+        cls = "ok" if r["ev"] > 0 else "bad"
+        # Стрелка про движение цены, а не про выгоду: вверх — наша цена была
+        # выше закрывающей, то есть мы успели взять лучше.
+        mark = ("=" if abs(r["move"]) < 0.005
+                else ('<span class="ok">↑</span>' if r["move"] > 0
+                      else '<span class="bad">↓</span>'))
+        body.append([
+            f'{e(r["p1"])} — {e(r["p2"])}<br>'
+            f'<span class="dim">{e(fmt_when(r["when"]))}</span>',
+            e(sel),
+            f'<span class=num>{r["open"]:.3f}</span>',
+            f'<span class=num>{r["close"]:.3f}</span> {mark}',
+            f'<span class="num {cls}">{r["ev"] * 100:+.1f}%</span>',
+        ])
+    return ("<h3>Ставка за ставкой</h3>"
+            + table(["Матч", "Ставка", "Взяли", "Закрытие", "CLV"], body))
 
 
 def view_clv(q):
@@ -457,7 +491,7 @@ def view_clv(q):
     def line(name, data):
         if not data:
             return None
-        ev = [v for _, v in data]
+        ev = [x["ev"] for x in data]
         avg = sum(ev) / len(ev)
         pos = sum(1 for v in ev if v > 0) / len(ev) * 100
         cls = "ok" if avg > 0 else "bad"
@@ -466,13 +500,13 @@ def view_clv(q):
                 f'<span class=num>{pos:.0f}%</span>']
 
     body = []
-    for market in sorted({m for m, _ in rows}):
-        got = line(market, [x for x in rows if x[0] == market])
+    for market in sorted({r["market"] for r in rows}):
+        got = line(market, [x for x in rows if x["market"] == market])
         if got:
             body.append(got)
     body.append(line("Вместе", rows))
 
-    ev = [v for _, v in rows]
+    ev = [x["ev"] for x in rows]
     avg = sum(ev) / len(ev)
     if len(rows) < 50:
         verdict = ('<span class="warn">рано судить</span>: снято '
@@ -488,6 +522,7 @@ def view_clv(q):
         'доходность ставки по закрывающей цене без маржи: плюс означает, что '
         'мы взяли цену выше справедливой на момент закрытия, ноль или минус — '
         'что просто платили комиссию.</p>',
+        _clv_detail(rows),
     ])
 
 
