@@ -1,4 +1,4 @@
-# tennis-data-pipeline
+# Теннис: сбор данных, модель матча и сверка с линией
 
 Система собирает статистику по теннисным матчам с двух сайтов, считает
 вероятность исхода (Elo + Монте-Карло), сравнивает её с линией Pinnacle и
@@ -74,7 +74,8 @@ Telegram Bot API, Pinnacle API. Хранение — JSON и CSV.
 ## Запуск
 
 ```bash
-git clone <repo> && cd tennis-data-pipeline
+git clone https://github.com/antonantonovhh/tennis-data-public.git
+cd tennis-data-public
 python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 ./venv/bin/playwright install chromium
 cp .env.example .env      # заполнить токены и ключи
