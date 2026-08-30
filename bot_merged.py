@@ -40,6 +40,27 @@ TOUR_URL = {
     "atp": "https://www.tennisratio.com/atp-matches.html",
     "wta": "https://www.tennisratio.com/wta-matches.html",
 }
+
+def tour_key(tour):
+    """Ключ тура: приводит регистр и НЕ прощает неизвестное значение.
+
+    Раньше выбор шёл через `TOUR_URL.get(tour, URL)`, и опечатка в названии
+    молча отдавала мужскую афишу: `parse_matches({}, {}, 'WTA')` возвращал
+    100 мужских матчей вместо 60 женских, а снаружи это выглядело как
+    «WTA-афиша сломалась». Тихая подмена тура — худший вид ошибки в этом
+    проекте: женские журналы наполнились бы мужскими матчами, и заметили бы
+    это по расходящемуся ROI через недели.
+
+    Регистр приводим (это опечатка, а не другой тур), неизвестный тур —
+    исключение: пусть падает сразу и громко.
+    """
+    key = str(tour or "atp").strip().lower()
+    if key not in TOUR_URL:
+        raise ValueError(
+            f"неизвестный тур {tour!r}; допустимые: {', '.join(sorted(TOUR_URL))}")
+    return key
+
+
 CHECK_INTERVAL = 60
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -881,7 +902,7 @@ def parse_yelo_ratings(tour="atp"):
     Значение по умолчанию сохраняет прежнее поведение: основной бот зовёт
     функцию без аргумента и продолжает работать по мужскому туру.
     """
-    yelo_url = YELO_URL_BY_TOUR.get(tour, YELO_URL_BY_TOUR["atp"])
+    yelo_url = YELO_URL_BY_TOUR[tour_key(tour)]
     yelo_map = {}
     try:
         response = requests.get(yelo_url, headers=HEADERS, timeout=15)
@@ -901,7 +922,7 @@ def parse_yelo_ratings(tour="atp"):
 
 def parse_surface_elo_ratings(tour="atp"):
     """Elo по покрытиям. tour: atp | wta."""
-    elo_url = ELO_URL_BY_TOUR.get(tour, ELO_URL_BY_TOUR["atp"])
+    elo_url = ELO_URL_BY_TOUR[tour_key(tour)]
     surface_elo_map = {}
     try:
         response = requests.get(elo_url, headers=HEADERS, timeout=15)
@@ -940,9 +961,11 @@ def parse_matches(yelo_ratings, surface_elo_ratings, tour="atp"):
     Аргумент со значением по умолчанию: основной бот зовёт функцию без него
     и продолжает работать по мужской афише ровно как раньше.
     """
+    # Тур проверяем ДО try: ниже стоит широкий except, и опечатка вылезала бы
+    # из него как «Ошибка сети» с пустой афишей — диагноз, уводящий в сторону.
+    url = TOUR_URL[tour_key(tour)]
     discovered_matches = {}
     try:
-        url = TOUR_URL.get(tour, URL)
         response = requests.get(url, headers=HEADERS, timeout=15)
         if response.status_code != 200: return discovered_matches
         soup = BeautifulSoup(response.text, "html.parser")
