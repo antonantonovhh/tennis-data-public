@@ -275,8 +275,17 @@ def send_notification(text, chat_id=CHAT_ID, reply_markup=None, reply_to=None):
             payload["reply_to_message_id"] = reply_to
             # если исходное сообщение удалили, Telegram иначе вернёт ошибку и ничего не пришлёт
             payload["allow_sending_without_reply"] = True
-        try: requests.post(tg_url, json=payload, timeout=10)
-        except: pass
+        # Ответ проверяем: раньше здесь стоял голый except, и отвергнутое
+        # сообщение исчезало бесследно — в журнале оно есть (его печатает
+        # print выше), а в чат не пришло. Самый частый случай — превышение
+        # лимита в ~4096 символов и сломанная HTML-разметка.
+        try:
+            got = requests.post(tg_url, json=payload, timeout=10)
+            if got.status_code != 200:
+                print(f"⚠️ Telegram отклонил сообщение ({got.status_code}): "
+                      f"{got.text[:200]}")
+        except Exception as exc:
+            print(f"⚠️ Telegram недоступен: {exc}")
 
 def send_photo(photo_path, chat_id=CHAT_ID, caption=""):
     """Отправляет файл-картинку (например, скриншот страницы) в Telegram."""
@@ -3064,6 +3073,30 @@ def _te_row_scores(row):
     return scores
 
 
+def board_start(raw):
+    """Время начала матча со строки афиши («30.08. 16:30», UTC).
+
+    Год в строке отсутствует, поэтому берём текущий и поправляем, если
+    получилось далеко в будущем или прошлом — на переходе через новый год
+    иначе весь январь выглядел бы сыгранным год назад.
+    """
+    m = re.match(r"\s*(\d{1,2})\.(\d{1,2})\.?\s*(\d{1,2}):(\d{2})", str(raw or ""))
+    if not m:
+        return None
+    day, month, hh, mm = (int(x) for x in m.groups())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        got = datetime.datetime(now.year, month, day, hh, mm,
+                                tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    if got - now > datetime.timedelta(days=180):
+        got = got.replace(year=now.year - 1)
+    elif now - got > datetime.timedelta(days=180):
+        got = got.replace(year=now.year + 1)
+    return got
+
+
 def _is_te_head_row(tr):
     """Строка-заголовок турнира на TennisExplorer, а не строка игрока.
 
@@ -3434,7 +3467,7 @@ def monitor():
     send_notification(
         f"✅ Бот запущен!\nЗагружаю базу матчей...\n"
         f"⏳ В ожидании кэфов после рестарта: {len(pending_tasks)}\n\n"
-        "<b>Команды:</b>\n/pending — Ожидание кэфов\n/memory — Память\n/results — Проверить результаты вручную\n/screenshot <ссылка> — Скриншот страницы\n/h2h Игрок1 - Игрок2 — Форма (10 матчей) + H2H\n/claudetest — Проверить ключ и инструменты Claude\n\n<i>По ссылке на матч: Кэфы · H2H · Статистика + симуляция · Симуляция · Разбор · Claude</i>"
+        "<b>Команды:</b>\n/pending — Ожидание кэфов\n/memory — Память\n/results — Проверить результаты вручную\n/screenshot &lt;ссылка&gt; — Скриншот страницы\n/h2h Игрок1 - Игрок2 — Форма (10 матчей) + H2H\n/claudetest — Проверить ключ и инструменты Claude\n\n<i>По ссылке на матч: Кэфы · H2H · Статистика + симуляция · Симуляция · Разбор · Claude</i>"
     )
 
     try:
@@ -3446,9 +3479,20 @@ def monitor():
         send_notification(f"⚠️ Не удалось загрузить базу матчей при старте: {e}\nБот продолжит работу и повторит попытку позже.")
         yelo_ratings, surface_elo_ratings, initial_matches = {}, {}, {}
 
-    seen_slugs = set(initial_matches.keys())
+    # Список уже показанных матчей ПЕРЕЖИВАЕТ перезапуск. Раньше он жил
+    # только в памяти и на старте молча вбирал всю текущую афишу: так и
+    # задумано, чтобы после рестарта не вывалить в чат полсотни матчей
+    # разом. Побочный эффект оказался хуже проблемы — каждый перезапуск
+    # НАВСЕГДА проглатывал всё, что в тот момент висело на афише.
+    # 30.08.2026 так пропали 60 матчей US Open: бот перезапускали ради
+    # выкладок, и матчи, уже стоявшие в расписании, не показались никогда.
+    # Теперь состояние сохраняется, и после рестарта объявляется ровно то,
+    # что появилось за время простоя.
+    saved_seen = set(bot_state.get("seen_slugs") or [])
+    seen_slugs = saved_seen if saved_seen else set(initial_matches.keys())
     latest_matches = initial_matches
-    print(f"✅ База теннисных матчей загружена: {len(seen_slugs)} шт.")
+    print(f"✅ База теннисных матчей загружена: {len(initial_matches)} шт. "
+          f"(в памяти показанных: {len(seen_slugs)})")
     send_notification(f"🎾 База матчей загружена: {len(seen_slugs)} шт. Ожидаю ссылки.")
     
     tg_offset = None
@@ -3696,7 +3740,7 @@ def monitor():
                     elif text.lower().startswith("/screenshot") and chat_id:
                         parts = text.split(maxsplit=1)
                         if len(parts) < 2 or not parts[1].strip():
-                            send_notification("Использование: /screenshot <ссылка>", chat_id)
+                            send_notification("Использование: /screenshot &lt;ссылка&gt;", chat_id)
                         else:
                             target_url = parts[1].strip()
                             if not target_url.startswith("http"):
@@ -3803,7 +3847,22 @@ def monitor():
             current_matches = parse_matches(yelo_ratings, surface_elo_ratings)
             if current_matches:
                 latest_matches = current_matches
-                new_slugs = set(current_matches.keys()) - seen_slugs
+                fresh = set(current_matches.keys()) - seen_slugs
+                if fresh:
+                    # Помечаем показанными ВСЕ новые, а объявляем только те,
+                    # что ещё не начались: после долгого простоя в афише
+                    # набирается пачка уже игранных матчей, и сыпать их в чат
+                    # незачем. Отметка сохраняется сразу, чтобы перезапуск
+                    # между кругами не показал их повторно.
+                    seen_slugs.update(fresh)
+                    save_state({"pending_tasks": pending_tasks,
+                                "awaiting_bets": awaiting_bets,
+                                "seen_slugs": sorted(seen_slugs)})
+                    now_utc = datetime.datetime.now(datetime.timezone.utc)
+                    new_slugs = {
+                        s for s in fresh
+                        if (board_start(current_matches[s].get("date")) or now_utc)
+                        >= now_utc - datetime.timedelta(minutes=10)}
                 if new_slugs:
                     grouped_matches = {}
                     for slug in new_slugs:
@@ -3820,8 +3879,15 @@ def monitor():
                             message_lines.append(f"  <b>🏟️ {tournament} · {len(matches)} шт:</b>")
                             for m in matches: message_lines.append(f"    • {m}")
                         message_lines.append("")
-                    send_notification("\n".join(message_lines).strip())
-                    seen_slugs.update(new_slugs)
+                    text = "\n".join(message_lines).strip()
+                    # Длинный список Telegram отвергает целиком (лимит ~4096
+                    # символов), а send_notification ответ не проверяет —
+                    # сообщение пропало бы молча. Пачка в полсотни матчей
+                    # этот предел берёт легко.
+                    if len(text) > 3500:
+                        send_long_message(text, CHAT_ID, convert_markdown=False)
+                    else:
+                        send_notification(text)
 
         if current_time - last_elo_update >= 86400:
             yelo_ratings = parse_yelo_ratings() or yelo_ratings
