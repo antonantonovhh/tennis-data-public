@@ -411,11 +411,92 @@ def bankroll_chart(period) -> str:
             + line_chart(series, labels, hint=hint))
 
 
+CLV_CSV = (os.environ.get("BOT_CLV_CSV")
+           or os.path.join(os.path.dirname(DB), "clv_bot.csv"))
+
+
+def _clv_rows():
+    """Ставки со снятой закрывающей ценой.
+
+    Файл пишет collect_clv.py --source bot по таймеру. Базу ставок он не
+    трогает: связь по ключу, как и у обходчика.
+    """
+    if not os.path.exists(CLV_CSV):
+        return []
+    import csv  # noqa: PLC0415
+    out = []
+    with open(CLV_CSV, newline="", encoding="utf-8-sig") as fh:
+        for r in csv.DictReader(fh, delimiter=";"):
+            op, cl, ot = (num(r.get("odds_open")), num(r.get("odds_close")),
+                          num(r.get("odds_close_other")))
+            if not (op and cl and ot):
+                continue
+            # Маржа снимается по обеим сторонам: без этого любая ставка
+            # выглядит убыточной просто потому, что комиссия сидит в цене.
+            p = (1 / cl) / (1 / cl + 1 / ot)
+            out.append((r.get("market") or "?", p * op - 1))
+    return out
+
+
+def view_clv(q):
+    """CLV: брали ли мы цену лучше закрывающей."""
+    rows = _clv_rows()
+    head = ['<p class="note">Закрывающая линия — последняя цена Pinnacle '
+            'перед стартом матча, маржа из неё убрана по обеим сторонам. '
+            'Смысл прост: если наши ставки систематически берут цену лучше '
+            'неё, у отбора есть перевес; если нет — его нет. Ценно тем, что '
+            'ждать результата матча не нужно: сигнал даёт каждая ставка '
+            'сразу, поэтому выборка набирается в разы быстрее, чем для ROI. '
+            'Это измерительный прибор, а не источник денег.</p>']
+    if not rows:
+        return "".join(head + [
+            '<p class="dim">Пока ничего не снято. Линия берётся по таймеру '
+            '<code>clv-collect-bot.timer</code> за 20 минут до начала матча — '
+            'первые строки появятся, когда подойдёт время ближайшей ставки.</p>'])
+
+    def line(name, data):
+        if not data:
+            return None
+        ev = [v for _, v in data]
+        avg = sum(ev) / len(ev)
+        pos = sum(1 for v in ev if v > 0) / len(ev) * 100
+        cls = "ok" if avg > 0 else "bad"
+        return [e(name), f'<span class=num>{len(data)}</span>',
+                f'<span class="num {cls}">{avg * 100:+.2f}%</span>',
+                f'<span class=num>{pos:.0f}%</span>']
+
+    body = []
+    for market in sorted({m for m, _ in rows}):
+        got = line(market, [x for x in rows if x[0] == market])
+        if got:
+            body.append(got)
+    body.append(line("Вместе", rows))
+
+    ev = [v for _, v in rows]
+    avg = sum(ev) / len(ev)
+    if len(rows) < 50:
+        verdict = ('<span class="warn">рано судить</span>: снято '
+                   f'{len(rows)} ставок')
+    elif avg > 0:
+        verdict = '<span class="ok">цена в среднем лучше закрывающей</span>'
+    else:
+        verdict = '<span class="bad">цена в среднем хуже закрывающей</span>'
+
+    return "".join(head + [
+        table(["Рынок", "Ставок", "Средний CLV", "Доля с плюсом"], body),
+        f'<p class="note">Вывод: {verdict}. «Средний CLV» — ожидаемая '
+        'доходность ставки по закрывающей цене без маржи: плюс означает, что '
+        'мы взяли цену выше справедливой на момент закрытия, ноль или минус — '
+        'что просто платили комиссию.</p>',
+    ])
+
+
 ROUTES = {
     "/": (view_home, "home", "Сводка"),
     "/bets": (view_bets, "bets", "Ставки"),
     "/live": (view_live, "live", "В игре"),
     "/days": (view_days, "days", "По дням"),
+    "/clv": (view_clv, "clv", "Закрытие"),
 }
 
 

@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -76,6 +78,13 @@ CLV_CSV = (os.environ.get("TRA_CLV_CSV")
            or os.path.join(os.path.dirname(VALUE_CSV),
                            os.path.basename(VALUE_CSV).replace("value_bets", "clv")))
 
+# Ставки бота — отдельная популяция со своим отбором (нажатая кнопка, а не
+# найденное расхождение), поэтому и файл отдельный. Смешивать их с журналами
+# обходчика нельзя по той же причине, по которой у тех разведены туры.
+BOT_DB = os.environ.get("BETS_DB") or os.path.join(HERE, "bets_db.json")
+BOT_CLV_CSV = (os.environ.get("BOT_CLV_CSV")
+               or os.path.join(os.path.dirname(BOT_DB), "clv_bot.csv"))
+
 FIELDS = ["key", "stream", "slug", "p1", "p2", "when", "market", "pick", "line",
           "odds_open", "odds_close", "odds_close_other", "taken_at", "closed_at"]
 
@@ -86,21 +95,70 @@ MARKET_KEY = {"Total Sets": "total_sets", "Sets Hcap": "h_sets",
 
 def bet_key(row: dict, stream: str) -> str:
     """Ключ ставки. У ценных он уже есть (bet_id), у исходов — по слагу."""
+    if row.get("_key"):
+        return row["_key"]          # ставки бота приносят ключ с собой
     if stream == "value":
         return f"value|{row.get('bet_id') or ''}"
     return f"pick|{row.get('slug') or ''}"
 
 
-def load_done() -> set:
-    if not os.path.exists(CLV_CSV):
+def bot_rows() -> list:
+    """Ставки бота из bets_db.json в том же виде, что строки журналов.
+
+    Структура там другая — матч с вложенным списком ставок, — но дальше по
+    коду нужен один и тот же набор полей, поэтому приводим здесь, а не
+    разводим два пути съёма линии.
+    """
+    try:
+        with open(BOT_DB, encoding="utf-8") as fh:
+            db = json.load(fh)
+    except (OSError, ValueError) as exc:
+        log.error("%s не читается: %s", BOT_DB, exc)
+        return []
+    out = []
+    for m in db.get("bets", []):
+        if m.get("resolved"):
+            continue
+        for b in m.get("bets", []):
+            if b.get("status") != "pending":
+                continue
+            kind, pred = b.get("type"), (b.get("prediction") or "")
+            if kind == "Moneyline":
+                market, pick, line = "Moneyline", pred.strip(), None
+                if pick not in ("П1", "П2"):
+                    continue
+            elif kind == "Total Sets":
+                # «ТБ 2.5 (сеты)» -> сторона и линия. Разбираем, а не сверяем
+                # со строкой целиком: линия зависит от формата матча (2.5 в
+                # трёх сетах, 3.5 в пяти).
+                got = re.search(r"(ТБ|ТМ)\s*([\d.,]+)", pred)
+                if not got:
+                    continue
+                market, pick = "Total Sets", got.group(1)
+                line = float(got.group(2).replace(",", "."))
+            else:
+                continue
+            out.append({
+                "slug": m.get("match_id"), "p1": m.get("player1"),
+                "p2": m.get("player2"), "when": m.get("date"),
+                "market": market, "pick": pick, "line": line,
+                "odds": b.get("odds"), "status": "pending",
+                "found_at": m.get("added_ts") or "",
+                "_key": f"bot|{m.get('match_id')}|{kind}|{pred}",
+            })
+    return out
+
+
+def load_done(path: str) -> set:
+    if not os.path.exists(path):
         return set()
-    with open(CLV_CSV, newline="", encoding="utf-8-sig") as fh:
+    with open(path, newline="", encoding="utf-8-sig") as fh:
         return {r.get("key") for r in csv.DictReader(fh, delimiter=";")}
 
 
-def append(rows: list) -> None:
-    new = not os.path.exists(CLV_CSV)
-    with open(CLV_CSV, "a", newline="", encoding="utf-8-sig") as fh:
+def append(path: str, rows: list) -> None:
+    new = not os.path.exists(path)
+    with open(path, "a", newline="", encoding="utf-8-sig") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS, delimiter=";",
                            extrasaction="ignore")
         if new:
@@ -172,14 +230,21 @@ def main() -> int:
                     help="за сколько минут до начала снимать линию")
     ap.add_argument("--grace", type=int, default=5,
                     help="сколько минут после начала ещё допустимо")
+    ap.add_argument("--source", default="crawler", choices=["crawler", "bot"],
+                    help="чьи ставки снимать: журналы обходчика или bets_db.json")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    done = load_done()
-    todo = (
-        [(r, "value") for r in due(_read(VALUE_CSV, VALUE_FIELDS), "value", done, args.window, args.grace)]
-        + [(r, "pick") for r in due(_read(PICKS_CSV, PICK_FIELDS), "pick", done, args.window, args.grace)]
-    )
+    out_csv = BOT_CLV_CSV if args.source == "bot" else CLV_CSV
+    done = load_done(out_csv)
+    if args.source == "bot":
+        todo = [(r, "bot") for r in
+                due(bot_rows(), "bot", done, args.window, args.grace)]
+    else:
+        todo = (
+            [(r, "value") for r in due(_read(VALUE_CSV, VALUE_FIELDS), "value", done, args.window, args.grace)]
+            + [(r, "pick") for r in due(_read(PICKS_CSV, PICK_FIELDS), "pick", done, args.window, args.grace)]
+        )
     if not todo:
         log.info("в окне никого: снимать нечего")
         return 0
@@ -225,10 +290,10 @@ def main() -> int:
         log.info("нечего записывать")
         return 0
     if not args.apply:
-        log.info("сухой прогон: записал бы %d строк в %s", len(out), CLV_CSV)
+        log.info("сухой прогон: записал бы %d строк в %s", len(out), out_csv)
         return 0
-    append(out)
-    log.info("записано строк: %d -> %s", len(out), CLV_CSV)
+    append(out_csv, out)
+    log.info("записано строк: %d -> %s", len(out), out_csv)
     return 0
 
 
