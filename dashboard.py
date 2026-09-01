@@ -58,7 +58,7 @@ TOKEN = os.environ.get("DASH_TOKEN") or secrets.token_urlsafe(12)
 REFRESH = int(os.environ.get("DASH_REFRESH", "120"))
 
 # Вёрстка, стили и сервер — общие с панелью первого бота, см. webui.py
-from webui import (cards, e, fmt_stamp, fmt_when,  # noqa: E402
+from webui import (cards, cluster_ci, e, fmt_stamp, fmt_when,  # noqa: E402
                    line_chart, links as _links, load_env, money,
                    num, pct, serve, table)
 
@@ -1120,6 +1120,7 @@ def _clv_rows():
         p = (1 / cl) / (1 / cl + 1 / ot)
         out.append({
             "stream": r.get("stream") or "?",
+            "slug": r.get("slug") or "",
             "market": r.get("market") or "?",
             "pick": r.get("pick") or "",
             "line": (r.get("line") or "").replace(",", "."),
@@ -1212,7 +1213,12 @@ def _clv_block() -> str:
         ev = [x["ev"] for x in data]
         avg = sum(ev) / len(ev)
         pos = sum(1 for v in ev if v > 0) / len(ev) * 100
-        lo, hi = _paired_ci(ev)
+        # Группируем по матчу: несколько ставок на одном матче двигаются
+        # вместе с линией, и интервал «по ставкам» вышел бы уже настоящего.
+        groups = {}
+        for x in data:
+            groups.setdefault(x["slug"], []).append(x["ev"])
+        lo, hi = cluster_ci(list(groups.values()))
         cls = "ok" if avg > 0 else "bad"
         ci = (f"[{lo * 100:+.1f}% … {hi * 100:+.1f}%]"
               if lo is not None else "—")
@@ -1228,7 +1234,10 @@ def _clv_block() -> str:
 
     ev = [x["ev"] for x in rows]
     avg = sum(ev) / len(ev)
-    lo, hi = _paired_ci(ev)
+    groups = {}
+    for x in rows:
+        groups.setdefault(x["slug"], []).append(x["ev"])
+    lo, hi = cluster_ci(list(groups.values()))
     if len(rows) < 100:
         verdict = ('<span class="warn">рано судить</span>: снято '
                    f'{len(rows)} ставок, для вывода нужно хотя бы сотня-другая')

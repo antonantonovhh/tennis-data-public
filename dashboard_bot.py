@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from webui import (bar, cards, e, fmt_stamp, fmt_when, line_chart,  # noqa: E402
+from webui import (bar, cards, cluster_ci, e, fmt_stamp,  # noqa: E402
+                   fmt_when, line_chart,
                    links, load_env, money, num, pct, serve, table)
 
 
@@ -436,6 +437,7 @@ def _clv_rows():
             p = (1 / cl) / (1 / cl + 1 / ot)
             out.append({
                 "market": r.get("market") or "?",
+                "slug": r.get("slug") or "",
                 "pick": r.get("pick") or "",
                 "line": (r.get("line") or "").replace(",", "."),
                 "p1": r.get("p1") or "", "p2": r.get("p2") or "",
@@ -507,10 +509,19 @@ def view_clv(q):
         ev = [x["ev"] for x in data]
         avg = sum(ev) / len(ev)
         pos = sum(1 for v in ev if v > 0) / len(ev) * 100
+        # Интервал считается по МАТЧАМ: на матч приходится несколько ставок
+        # с общим движением линии, и «по ставкам» он вышел бы уже настоящего.
+        groups = {}
+        for x in data:
+            groups.setdefault(x["slug"], []).append(x["ev"])
+        lo, hi = cluster_ci(list(groups.values()))
+        ci = (f"[{lo * 100:+.1f}% … {hi * 100:+.1f}%]" if lo is not None else "—")
         cls = "ok" if avg > 0 else "bad"
         return [e(name), f'<span class=num>{len(data)}</span>',
+                f'<span class="num dim">{len(groups)}</span>',
                 f'<span class="num {cls}">{avg * 100:+.2f}%</span>',
-                f'<span class=num>{pos:.0f}%</span>']
+                f'<span class=num>{pos:.0f}%</span>',
+                f'<span class="num dim">{ci}</span>']
 
     body = []
     for market in sorted({r["market"] for r in rows}):
@@ -530,7 +541,8 @@ def view_clv(q):
         verdict = '<span class="bad">цена в среднем хуже закрывающей</span>'
 
     return "".join(head + [
-        table(["Рынок", "Ставок", "Средний CLV", "Доля с плюсом"], body),
+        table(["Рынок", "Ставок", "Матчей", "Средний CLV", "Доля с плюсом",
+               "95% интервал"], body),
         f'<p class="note">Вывод: {verdict}. «Средний CLV» — ожидаемая '
         'доходность ставки по закрывающей цене без маржи: плюс означает, что '
         'мы взяли цену выше справедливой на момент закрытия, ноль или минус — '

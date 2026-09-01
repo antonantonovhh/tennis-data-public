@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import random
 import secrets
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -618,3 +619,35 @@ def serve(*, title: str, subtitle: str, routes: dict, token: str,
         srv.serve_forever()
     except KeyboardInterrupt:
         srv.shutdown()
+
+
+def cluster_ci(groups, iters: int = 2000, seed: int = 7):
+    """95% интервал для среднего, с ресэмплингом ГРУПП, а не значений.
+
+    groups — список списков: одна группа = один матч, внутри его ставки.
+    Ресэмплить надо матчи: на один матч приходится несколько ставок с общим
+    исходом и общим движением линии, и обычный интервал «по n ставкам»
+    считал бы их независимыми. Он выходит уже настоящего в полтора-два
+    раза — то есть врёт ровно в сторону «перевес есть». Та же логика, что
+    в check_edge.py.
+
+    Живёт здесь, а не в панели, потому что webui — единственный модуль,
+    общий для всех трёх панелей: иначе пришлось бы держать две копии.
+
+    Зерно фиксировано: одни и те же данные обязаны давать один и тот же
+    ответ, иначе числами нельзя пользоваться.
+    """
+    groups = [g for g in groups if g]
+    if len(groups) < 2:
+        return None, None
+    rnd = random.Random(seed)
+    n = len(groups)
+    got = []
+    for _ in range(iters):
+        vals = [v for _ in range(n) for v in groups[rnd.randrange(n)]]
+        if vals:
+            got.append(sum(vals) / len(vals))
+    if not got:
+        return None, None
+    got.sort()
+    return got[int(len(got) * 0.025)], got[int(len(got) * 0.975)]
