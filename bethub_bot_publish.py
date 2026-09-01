@@ -67,8 +67,16 @@ from bethub_publish import (find_selection, fmt_total,         # noqa: E402
 DB_FILE = os.environ.get("BETHUB_BOT_DB") or os.path.join(HERE, "bets_db.json")
 
 # Рынки бота -> рассылка по умолчанию. Реальный sub_id приходит из окружения
-# (BETHUB_BOT_SUB_ID) — в юните он свой у каждого потока.
-SUBS = {"Moneyline": 280383, "Total Sets": 280395}
+# (BETHUB_BOT_SUB_ID), юниты задают его в .env.bethub_bot_atp_ml_ts.
+#
+# С 30.08.2026 оба рынка идут в ОДНУ рассылку ATP-ML-TS (280970); прежние
+# BIGTENBETS (280383, исход) и BIGTENBETS2 (280395, тотал) не используются.
+# Значения по умолчанию обновлены вместе с ней намеренно: старые номера
+# здесь означали бы, что ручной запуск без окружения молча публикует в
+# выведенную из обращения рассылку — заметить это можно было бы очень
+# нескоро. Файлы учёта при этом остаются РАЗДЕЛЬНЫМИ по рынкам: два
+# процесса писали бы один json наперегонки.
+SUBS = {"Moneyline": 280970, "Total Sets": 280970}
 
 # Мужские категории в линии bet-hub, по полю country. См. event_index.
 LEAGUES = re.compile(os.environ.get("BETHUB_BOT_LEAGUES", r"^(ATP|ITF Men)\b"),
