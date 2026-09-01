@@ -383,7 +383,15 @@ def main() -> int:
                         sales_type=args.sales_type,
                         odds_policy=args.odds_policy)
         except bethub.BetHubError as exc:
-            print(f"    отказ: {exc.api_code}")
+            # Причину печатаем ОБЯЗАТЕЛЬНО. Сообщение биржи всегда одинаковое
+            # («The pickslip could not be published»), а настоящий повод
+            # лежит в details.reason — и он бывает совсем разный: то лимит
+            # активных прогнозов, то «Unsettled tips found» с требованием
+            # сначала рассчитать старые. Без этой строки отказы неотличимы
+            # друг от друга, и 01.09.2026 на этом ушло полдня: причину
+            # искали в состоянии рассылки, а API всё это время её называл.
+            why = (exc.details or {}).get("reason") or ""
+            print(f"    отказ: {exc.api_code}" + (f" — {why}" if why else ""))
             if exc.api_code == "provider_free_quota_exhausted":
                 break
             continue
